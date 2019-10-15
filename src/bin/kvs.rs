@@ -1,3 +1,4 @@
+use kvs::KvStore;
 use std::process::exit;
 use structopt::StructOpt;
 
@@ -21,17 +22,37 @@ struct Opt {
 fn main() {
     let opt: Opt = Opt::from_args();
     match opt.command {
-        Command::Set { .. } => {
-            eprintln!("unimplemented");
-            exit(1);
+        Command::Set { key, val } => {
+            let mut kv = KvStore::new();
+            match kv.set(key, val) {
+                Err(err) => {
+                    println!("{}", err);
+                    exit(1);
+                }
+                Ok(_) => (),
+            }
         }
-        Command::Get { .. } => {
-            eprintln!("unimplemented");
-            exit(1);
+        Command::Get { key } => {
+            let kv = KvStore::new();
+            match kv.get(key) {
+                Ok(Some(val)) => {
+                    println!("{}", val);
+                }
+                _ => {
+                    println!("Key not found");
+                    exit(1);
+                }
+            }
         }
-        Command::Remove { .. } => {
-            eprintln!("unimplemented");
-            exit(1);
+        Command::Remove { key } => {
+            let mut kv = KvStore::new();
+            match kv.remove(key) {
+                Ok(_) => (),
+                _ => {
+                    println!("Key not found");
+                    exit(1);
+                }
+            }
         }
     }
 }
