@@ -1,6 +1,8 @@
-use kvs::KvStore;
 use std::process::exit;
+
 use structopt::StructOpt;
+
+use kvs::KvStore;
 
 #[derive(Debug, StructOpt)]
 enum Command {
@@ -21,10 +23,10 @@ struct Opt {
 
 fn main() {
     let opt: Opt = Opt::from_args();
+    let mut store = KvStore::open(std::env::current_dir().unwrap()).unwrap_or_else(|_| exit(1));
     match opt.command {
         Command::Set { key, val } => {
-            let mut kv = KvStore::new();
-            match kv.set(key, val) {
+            match store.set(key, val) {
                 Err(err) => {
                     println!("{}", err);
                     exit(1);
@@ -33,8 +35,7 @@ fn main() {
             }
         }
         Command::Get { key } => {
-            let kv = KvStore::new();
-            match kv.get(key) {
+            match store.get(key) {
                 Ok(Some(val)) => {
                     println!("{}", val);
                 }
@@ -45,8 +46,7 @@ fn main() {
             }
         }
         Command::Remove { key } => {
-            let mut kv = KvStore::new();
-            match kv.remove(key) {
+            match store.remove(key) {
                 Ok(_) => (),
                 _ => {
                     println!("Key not found");
