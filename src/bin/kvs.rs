@@ -32,13 +32,9 @@ fn main() {
             }
         }
         Command::Get { key } => match store.get(key) {
-            Ok(Some(val)) => {
-                println!("{}", val);
-            }
-            _ => {
-                println!("Key not found");
-                exit(1);
-            }
+            Ok(Some(val)) => println!("{}", val),
+            Ok(None) => println!("Key not found"),
+            _ => exit(1),
         },
         Command::Remove { key } => match store.remove(key) {
             Ok(_) => (),
