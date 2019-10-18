@@ -1,5 +1,5 @@
-use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::collections::BTreeMap;
+use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{KvsError, Result};
+
+const COMPACTION_THRESHOLD: u32 = 10_000;
+const FILE_SIZE_LIMIT: usize = 1_048_576;
 
 #[derive(Serialize, Deserialize)]
 enum Cmd {
@@ -47,10 +50,11 @@ impl LogIndex {
 /// ```
 pub struct KvStore {
     path: PathBuf,
-    key_index: HashMap<String, LogIndex>,
+    key_index: BTreeMap<String, LogIndex>,
     index_scanned: usize,
     mutable_file: File,
     wal_logs: Vec<File>,
+    active_redundant: u32,
 }
 
 impl Drop for KvStore {
@@ -64,6 +68,7 @@ impl KvStore {
     pub fn open<T: AsRef<Path>>(dir: T) -> Result<Self> {
         let mut log_dir = PathBuf::new();
         log_dir.push(dir);
+        create_dir_all(&log_dir)?;
 
         let mut files = vec![];
         for entry_result in log_dir.read_dir()? {
@@ -90,7 +95,7 @@ impl KvStore {
                 OpenOptions::new().append(true).open(files.last().unwrap().path())?
             };
 
-        let key_index = HashMap::new();
+        let key_index = BTreeMap::new();
 
         Ok(Self {
             path: log_dir,
@@ -98,6 +103,7 @@ impl KvStore {
             index_scanned: wal_logs.len() + 1,
             mutable_file,
             wal_logs,
+            active_redundant: 0,
         })
     }
 
@@ -163,7 +169,19 @@ impl KvStore {
 
         let file_index = self.wal_logs.len();
         let log_index = LogIndex::new(file_index, offset);
-        self.key_index.insert(key, log_index);
+
+        //trigger compaction if necessary: too much redundant records or active_file too large
+        if let Some(old_index) = self.key_index.insert(key, log_index) {
+            if old_index.file_index == self.wal_logs.len() {
+                self.active_redundant += 1;
+                if self.active_redundant > COMPACTION_THRESHOLD {
+                    self.minor_compact()?
+                }
+            }
+        }
+        if offset as usize > 10 * FILE_SIZE_LIMIT {
+            self.minor_compact()?
+        }
         Ok(())
     }
 
@@ -199,7 +217,7 @@ impl KvStore {
         let len = file.metadata()?.len() as usize;
         let mut cur = 0;
 
-        let mut local_index = HashMap::new();
+        let mut local_index = BTreeMap::new();
 
         let mut size_array = [0; 4];
         let mut buffer = vec![];
@@ -223,6 +241,53 @@ impl KvStore {
         local_index.into_iter().for_each(|(key, index)| {
             self.key_index.entry(key).or_insert(index);
         });
+
+        Ok(())
+    }
+
+    fn minor_compact(&mut self) -> Result<()> {
+        let active_path = self.path.join("wal_active".to_string());
+        let mut new_key_index = self.key_index.clone();
+
+        let new_active_path = self.path.join("new_active");
+        let mut new_active_file = File::create(&new_active_path)?;
+
+        let prev_active_index = self.wal_logs.len();
+        let mut cur_index = self.wal_logs.len();
+        let mut offset = 0;
+        for (_, log_index) in new_key_index.iter_mut() {
+            if log_index.file_index == prev_active_index {
+                let cmd = self.read_from_log(*log_index)?;
+                let serialized_cmd = serde_json::to_vec(&cmd)?;
+
+                if offset + serialized_cmd.len() + 4 >= FILE_SIZE_LIMIT {
+                    // save file as wal_##.log and create new active_file
+                    new_active_file.flush()?;
+                    drop(new_active_file);
+                    let next_log_path = self.path.join(format!("wal_{:05}.log", cur_index));
+                    std::fs::rename(&new_active_path, &next_log_path)?;
+                    self.wal_logs.push(File::open(next_log_path)?);
+
+                    new_active_file = File::open(&new_active_path)?;
+                    cur_index += 1;
+                    offset = 0;
+                }
+
+                new_active_file.write_all(&(serialized_cmd.len() as u32).to_le_bytes())?;
+                new_active_file.write_all(&serialized_cmd)?;
+
+                log_index.file_index = cur_index;
+                log_index.offset = offset as u64;
+                offset += serialized_cmd.len() + 4;
+            }
+        }
+        new_active_file.flush()?;
+        drop(new_active_file);
+        std::fs::rename(new_active_path, &active_path)?;
+
+        self.active_redundant = 0;
+        self.key_index = new_key_index;
+        self.mutable_file = OpenOptions::new().append(true).open(active_path)?;
 
         Ok(())
     }
