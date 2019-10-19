@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::prelude::*;
-use std::io::SeekFrom;
+use std::io::{BufReader, BufWriter, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -21,11 +21,16 @@ enum Cmd {
 struct LogIndex {
     file_index: usize,
     offset: u64,
+    len: u64,
 }
 
 impl LogIndex {
-    fn new(file_index: usize, offset: u64) -> Self {
-        Self { file_index, offset }
+    fn new(file_index: usize, offset: u64, len: u64) -> Self {
+        Self {
+            file_index,
+            offset,
+            len,
+        }
     }
 }
 
@@ -52,15 +57,10 @@ pub struct KvStore {
     path: PathBuf,
     key_index: BTreeMap<String, LogIndex>,
     index_scanned: usize,
-    mutable_file: File,
-    wal_logs: Vec<File>,
+    active_reader: BufReader<File>,
+    active_writer: BufWriter<File>,
+    wal_logs: Vec<BufReader<File>>,
     active_redundant: u32,
-}
-
-impl Drop for KvStore {
-    fn drop(&mut self) {
-        // todo: compact mutable file
-    }
 }
 
 impl KvStore {
@@ -83,17 +83,29 @@ impl KvStore {
         for entry in &files {
             let file = File::open(entry.path())?;
             if entry.file_name().to_str().unwrap().contains(".log") {
-                wal_logs.push(file);
+                wal_logs.push(BufReader::new(file));
             }
         }
 
-        let mutable_file =
-            if files.is_empty() || !files.last().unwrap().file_name().to_str().unwrap().contains("active") {
-                let path = log_dir.join("wal_active".to_string());
-                File::create(path)?
-            } else {
-                OpenOptions::new().append(true).open(files.last().unwrap().path())?
-            };
+        let (active_reader, active_writer) = if files.is_empty()
+            || !files
+                .last()
+                .unwrap()
+                .file_name()
+                .to_str()
+                .unwrap()
+                .contains("wal_active")
+        {
+            let path = log_dir.join("wal_active".to_string());
+            let writer = File::create(&path)?;
+            let reader = File::open(path)?;
+            (BufReader::new(reader), BufWriter::new(writer))
+        } else {
+            let path = files.last().unwrap().path();
+            let writer = OpenOptions::new().append(true).open(&path)?;
+            let reader = File::open(path)?;
+            (BufReader::new(reader), BufWriter::new(writer))
+        };
 
         let key_index = BTreeMap::new();
 
@@ -101,7 +113,8 @@ impl KvStore {
             path: log_dir,
             key_index,
             index_scanned: wal_logs.len() + 1,
-            mutable_file,
+            active_reader,
+            active_writer,
             wal_logs,
             active_redundant: 0,
         })
@@ -160,15 +173,13 @@ impl KvStore {
     }
 
     fn append_log(&mut self, cmd: Cmd, key: String) -> Result<()> {
-        let serialized_cmd = serde_json::to_vec(&cmd)?;
-        let offset = self.mutable_file.seek(SeekFrom::End(0))?;
-        self.mutable_file
-            .write_all(&(serialized_cmd.len() as u32).to_le_bytes())?;
-        self.mutable_file.write_all(&serialized_cmd)?;
-        self.mutable_file.flush()?;
+        let offset = self.active_writer.seek(SeekFrom::End(0))?;
+        serde_json::to_writer(&mut self.active_writer, &cmd)?;
+        self.active_writer.flush()?;
+        let new_offset = self.active_writer.seek(SeekFrom::End(0))?;
 
         let file_index = self.wal_logs.len();
-        let log_index = LogIndex::new(file_index, offset);
+        let log_index = LogIndex::new(file_index, offset, new_offset - offset);
 
         //trigger compaction if necessary: too much redundant records or active_file too large
         if let Some(old_index) = self.key_index.insert(key, log_index) {
@@ -186,21 +197,15 @@ impl KvStore {
     }
 
     fn read_from_log(&mut self, log_index: LogIndex) -> Result<Cmd> {
-        let mut file = if log_index.file_index == self.wal_logs.len() {
-            let path = self.path.join("wal_active".to_string());
-            File::open(path)?
+        let reader = if log_index.file_index == self.wal_logs.len() {
+            &mut self.active_reader
         } else {
-            self.wal_logs[self.index_scanned].try_clone()?
+            &mut self.wal_logs[self.index_scanned]
         };
-        file.seek(SeekFrom::Start(log_index.offset))?;
+        reader.seek(SeekFrom::Start(log_index.offset))?;
 
-        let mut size_array = [0; 4];
-        file.read_exact(&mut size_array[..])?;
-        let cmd_size = u32::from_le_bytes(size_array);
-
-        let mut buffer = vec![0; cmd_size as usize];
-        file.read_exact(&mut buffer[..cmd_size as usize])?;
-        serde_json::from_slice::<Cmd>(&buffer[..cmd_size as usize]).map_err(|e| e.into())
+        let take = reader.take(log_index.len);
+        serde_json::from_reader(take).map_err(|e| e.into())
     }
 
     fn import_next_log(&mut self) -> Result<()> {
@@ -208,34 +213,25 @@ impl KvStore {
             return Ok(());
         }
         self.index_scanned -= 1;
-        let mut file = if self.index_scanned == self.wal_logs.len() {
-            let path = self.path.join("wal_active".to_string());
-            File::open(path)?
+        let reader = if self.index_scanned == self.wal_logs.len() {
+            &mut self.active_reader
         } else {
-            self.wal_logs[self.index_scanned].try_clone()?
+            &mut self.wal_logs[self.index_scanned]
         };
-        let len = file.metadata()?.len() as usize;
-        let mut cur = 0;
 
+        reader.seek(SeekFrom::Start(0))?;
+        let mut cur_pos = 0;
         let mut local_index = BTreeMap::new();
+        let mut stream = serde_json::Deserializer::from_reader(reader).into_iter::<Cmd>();
 
-        let mut size_array = [0; 4];
-        let mut buffer = vec![];
-        while cur < len {
-            file.read_exact(&mut size_array[..])?;
-            let cmd_size = u32::from_le_bytes(size_array);
-            if buffer.len() < cmd_size as usize {
-                buffer.resize(cmd_size as usize, 0);
-            }
-            file.read_exact(&mut buffer[..cmd_size as usize])?;
-            let cmd = serde_json::from_slice::<Cmd>(&buffer[..cmd_size as usize])?;
-            let key = match cmd {
+        while let Some(cmd) = stream.next() {
+            let key = match cmd? {
                 Cmd::Set(key, _) => key.clone(),
                 Cmd::Rm(key) => key.clone(),
             };
-            local_index.insert(key, LogIndex::new(self.index_scanned, cur as u64));
-
-            cur += 4 + cmd_size as usize;
+            let new_pos = stream.byte_offset() as u64;
+            local_index.insert(key, LogIndex::new(self.index_scanned, cur_pos, new_pos - cur_pos));
+            cur_pos = new_pos;
         }
 
         local_index.into_iter().for_each(|(key, index)| {
@@ -250,44 +246,41 @@ impl KvStore {
         let mut new_key_index = self.key_index.clone();
 
         let new_active_path = self.path.join("new_active");
-        let mut new_active_file = File::create(&new_active_path)?;
+        let mut new_active_writer = BufWriter::new(File::create(&new_active_path)?);
 
         let prev_active_index = self.wal_logs.len();
         let mut cur_index = self.wal_logs.len();
         let mut offset = 0;
         for (_, log_index) in new_key_index.iter_mut() {
             if log_index.file_index == prev_active_index {
-                let cmd = self.read_from_log(*log_index)?;
-                let serialized_cmd = serde_json::to_vec(&cmd)?;
-
-                if offset + serialized_cmd.len() + 4 >= FILE_SIZE_LIMIT {
+                if offset + log_index.len as usize >= FILE_SIZE_LIMIT {
                     // save file as wal_##.log and create new active_file
-                    new_active_file.flush()?;
-                    drop(new_active_file);
+                    drop(new_active_writer);
                     let next_log_path = self.path.join(format!("wal_{:05}.log", cur_index));
                     std::fs::rename(&new_active_path, &next_log_path)?;
-                    self.wal_logs.push(File::open(next_log_path)?);
+                    self.wal_logs.push(BufReader::new(File::open(next_log_path)?));
 
-                    new_active_file = File::open(&new_active_path)?;
+                    new_active_writer = BufWriter::new(File::create(&new_active_path)?);
                     cur_index += 1;
                     offset = 0;
                 }
 
-                new_active_file.write_all(&(serialized_cmd.len() as u32).to_le_bytes())?;
-                new_active_file.write_all(&serialized_cmd)?;
+                let cmd = self.read_from_log(*log_index)?;
+                serde_json::to_writer(&mut new_active_writer, &cmd)?;
 
                 log_index.file_index = cur_index;
                 log_index.offset = offset as u64;
-                offset += serialized_cmd.len() + 4;
+                offset += log_index.len as usize;
             }
         }
-        new_active_file.flush()?;
-        drop(new_active_file);
+        new_active_writer.flush()?;
+        drop(new_active_writer);
         std::fs::rename(new_active_path, &active_path)?;
 
         self.active_redundant = 0;
         self.key_index = new_key_index;
-        self.mutable_file = OpenOptions::new().append(true).open(active_path)?;
+        self.active_reader = BufReader::new(File::open(&active_path)?);
+        self.active_writer = BufWriter::new(OpenOptions::new().append(true).open(active_path)?);
 
         Ok(())
     }
