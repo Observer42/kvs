@@ -8,4 +8,4 @@ mod error;
 mod kv;
 
 pub use error::{KvsError, Result};
-pub use kv::KvStore;
+pub use kv::{KvStore, KvsEngine};
