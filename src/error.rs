@@ -15,6 +15,9 @@ pub enum KvsError {
     /// Key not found
     #[fail(display = "key not found")]
     KeyNotFound,
+    /// Unknown server error
+    #[fail(display = "server error")]
+    ServerError,
 }
 
 impl From<io::Error> for KvsError {

@@ -1,9 +1,9 @@
+use std::net::SocketAddr;
 use std::process::exit;
 
 use structopt::StructOpt;
 
-use kvs::{KvStore, KvsEngine};
-use std::net::SocketAddr;
+use kvs::KvsClient;
 
 #[derive(Debug, StructOpt)]
 enum Command {
@@ -28,6 +28,16 @@ enum Command {
     },
 }
 
+impl Command {
+    fn get_addr(&self) -> &SocketAddr {
+        match self {
+            Command::Set { addr, .. } => addr,
+            Command::Get { addr, .. } => addr,
+            Command::Remove { addr, .. } => addr,
+        }
+    }
+}
+
 #[derive(Debug, StructOpt)]
 #[structopt(name = "kvs", about = env!("CARGO_PKG_DESCRIPTION"))]
 struct Opt {
@@ -37,20 +47,21 @@ struct Opt {
 
 fn main() {
     let opt: Opt = Opt::from_args();
-    let mut store = KvStore::open(std::env::current_dir().unwrap()).unwrap_or_else(|_| exit(1));
+    let mut client = KvsClient::init(opt.command.get_addr()).unwrap();
     match opt.command {
-        Command::Set { key, val, addr } => {
-            if let Err(err) = store.set(key, val) {
+        Command::Set { key, val, .. } => match client.set(key, val) {
+            Ok(_) => (),
+            Err(err) => {
                 println!("{}", err);
                 exit(1);
             }
-        }
-        Command::Get { key, addr } => match store.get(key) {
+        },
+        Command::Get { key, .. } => match client.get(key) {
             Ok(Some(val)) => println!("{}", val),
             Ok(None) => println!("Key not found"),
             _ => exit(1),
         },
-        Command::Remove { key, addr } => match store.remove(key) {
+        Command::Remove { key, .. } => match client.remove(key) {
             Ok(_) => (),
             _ => {
                 println!("Key not found");

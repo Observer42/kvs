@@ -37,8 +37,8 @@ impl FromStr for Engine {
 impl Display for Engine {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Engine::Kvs => write!(f, "{}", "kvs"),
-            Engine::Sled => write!(f, "{}", "sled"),
+            Engine::Kvs => write!(f, "kvs"),
+            Engine::Sled => write!(f, "sled"),
         }
     }
 }
