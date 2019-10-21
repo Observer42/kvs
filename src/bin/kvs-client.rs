@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::process::exit;
 
+use log::error;
 use structopt::StructOpt;
 
 use kvs::KvsClient;
@@ -52,7 +53,7 @@ fn main() {
         Command::Set { key, val, .. } => match client.set(key, val) {
             Ok(_) => (),
             Err(err) => {
-                println!("{}", err);
+                error!("{}", err);
                 exit(1);
             }
         },
@@ -64,7 +65,7 @@ fn main() {
         Command::Remove { key, .. } => match client.remove(key) {
             Ok(_) => (),
             _ => {
-                println!("Key not found");
+                eprintln!("Key not found");
                 exit(1);
             }
         },

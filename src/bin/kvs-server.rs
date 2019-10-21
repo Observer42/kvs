@@ -1,10 +1,10 @@
-use std::net::{SocketAddr, TcpListener};
+use std::net::SocketAddr;
 use std::str::FromStr;
 
-use log::{error, info};
+use log::info;
 use structopt::StructOpt;
 
-use kvs::{KvStore, KvsEngine};
+use kvs::{KvStore, KvsEngine, KvsServer};
 use std::env::current_dir;
 use std::fmt::{Display, Formatter};
 
@@ -60,6 +60,6 @@ fn main() -> kvs::Result<()> {
 }
 
 fn start_server<T: KvsEngine>(engine: T, addr: SocketAddr) -> kvs::Result<()> {
-    let _listener = TcpListener::bind(addr)?;
-    Ok(())
+    let mut server = KvsServer::init(engine, &addr)?;
+    server.serve()
 }

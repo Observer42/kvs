@@ -35,7 +35,6 @@ impl KvsClient {
         self.send(query)?;
         match self.receive()? {
             Response::Success => Ok(()),
-            Response::KeyNotFound => Err(KvsError::KeyNotFound),
             Response::Err => Err(KvsError::ServerError),
             _ => unreachable!(),
         }
