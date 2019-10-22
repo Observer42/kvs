@@ -4,8 +4,10 @@
 #[macro_use]
 extern crate failure;
 
+mod engine;
 mod error;
-mod kv;
+mod net;
 
+pub use engine::{EngineType, KvStore, KvsEngine, SledKvsEngine};
 pub use error::{KvsError, Result};
-pub use kv::KvStore;
+pub use net::{KvsClient, KvsServer};
