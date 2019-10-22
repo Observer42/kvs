@@ -8,6 +8,6 @@ mod engine;
 mod error;
 mod net;
 
-pub use engine::{KvStore, KvsEngine};
+pub use engine::{EngineType, KvStore, KvsEngine, SledKvsEngine};
 pub use error::{KvsError, Result};
 pub use net::{KvsClient, KvsServer};

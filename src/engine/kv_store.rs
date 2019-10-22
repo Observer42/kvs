@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::engine::{try_add_engine_type, EngineType};
 use crate::{KvsEngine, KvsError, Result};
 
 const COMPACTION_THRESHOLD: u32 = 10_000;
@@ -69,6 +70,8 @@ impl KvStore {
         let mut log_dir = PathBuf::new();
         log_dir.push(dir);
         create_dir_all(&log_dir)?;
+
+        try_add_engine_type(&log_dir, EngineType::KvStore)?;
 
         let mut files = vec![];
         for entry_result in log_dir.read_dir()? {
