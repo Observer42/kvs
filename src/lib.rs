@@ -7,6 +7,7 @@ extern crate failure;
 mod engine;
 mod error;
 mod net;
+pub mod thread_pool;
 
 pub use engine::{EngineType, KvStore, KvsEngine, SledKvsEngine};
 pub use error::{KvsError, Result};
