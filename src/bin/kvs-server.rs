@@ -31,6 +31,6 @@ fn main() -> kvs::Result<()> {
 }
 
 fn start_server<T: KvsEngine>(engine: T, addr: SocketAddr) -> kvs::Result<()> {
-    let mut server = KvsServer::init(engine, &addr)?;
+    let server = KvsServer::init(engine, &addr)?;
     server.serve()
 }

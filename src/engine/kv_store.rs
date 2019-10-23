@@ -3,6 +3,7 @@ use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::prelude::*;
 use std::io::{BufReader, BufWriter, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -54,7 +55,37 @@ impl LogIndex {
 ///
 /// std::fs::remove_dir_all(&dir);
 /// ```
+#[derive(Clone)]
 pub struct KvStore {
+    inner: Arc<Mutex<KvStoreInner>>,
+}
+
+impl KvStore {
+    /// load the kv store from disk
+    pub fn open<T: AsRef<Path>>(dir: T) -> Result<Self> {
+        let inner = Arc::new(Mutex::new(KvStoreInner::open(dir)?));
+        Ok(Self { inner })
+    }
+}
+
+impl KvsEngine for KvStore {
+    fn get(&self, key: String) -> Result<Option<String>> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.get(key)
+    }
+
+    fn set(&self, key: String, value: String) -> Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.set(key, value)
+    }
+
+    fn remove(&self, key: String) -> Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.remove(key)
+    }
+}
+
+struct KvStoreInner {
     path: PathBuf,
     key_index: BTreeMap<String, LogIndex>,
     index_scanned: usize,
@@ -64,9 +95,8 @@ pub struct KvStore {
     active_redundant: u32,
 }
 
-impl KvStore {
-    /// load the kv store from disk
-    pub fn open<T: AsRef<Path>>(dir: T) -> Result<Self> {
+impl KvStoreInner {
+    fn open<T: AsRef<Path>>(dir: T) -> Result<Self> {
         let mut log_dir = PathBuf::new();
         log_dir.push(dir);
         create_dir_all(&log_dir)?;
@@ -121,6 +151,51 @@ impl KvStore {
             wal_logs,
             active_redundant: 0,
         })
+    }
+
+    fn set(&mut self, key: String, value: String) -> Result<()> {
+        self.append_log(Cmd::Set(key.clone(), value), key)
+    }
+
+    fn get(&mut self, key: String) -> Result<Option<String>> {
+        if let Some(&log_index) = self.key_index.get(&key) {
+            let cmd = self.read_from_log(log_index)?;
+            match cmd {
+                Cmd::Set(_, val) => Ok(Some(val)),
+                Cmd::Rm(_) => Ok(None),
+            }
+        } else {
+            while self.index_scanned != 0 {
+                self.import_next_log()?;
+                if let Some(&log_index) = self.key_index.get(&key) {
+                    let cmd = self.read_from_log(log_index)?;
+                    match cmd {
+                        Cmd::Set(_, val) => return Ok(Some(val)),
+                        Cmd::Rm(_) => return Ok(None),
+                    }
+                }
+            }
+            Ok(None)
+        }
+    }
+
+    fn remove(&mut self, key: String) -> Result<()> {
+        if self.key_index.contains_key(&key) {
+            self.append_log(Cmd::Rm(key.clone()), key)
+        } else {
+            while self.index_scanned != 0 {
+                self.import_next_log()?;
+                if let Some(&log_index) = self.key_index.get(&key) {
+                    let cmd = self.read_from_log(log_index)?;
+                    if let Cmd::Rm(_) = cmd {
+                        return Err(KvsError::KeyNotFound);
+                    } else {
+                        return self.append_log(Cmd::Rm(key.clone()), key);
+                    }
+                }
+            }
+            Err(KvsError::KeyNotFound)
+        }
     }
 
     fn append_log(&mut self, cmd: Cmd, key: String) -> Result<()> {
@@ -234,52 +309,5 @@ impl KvStore {
         self.active_writer = BufWriter::new(OpenOptions::new().append(true).open(active_path)?);
 
         Ok(())
-    }
-}
-
-impl KvsEngine for KvStore {
-    fn set(&mut self, key: String, value: String) -> Result<()> {
-        self.append_log(Cmd::Set(key.clone(), value), key)
-    }
-
-    fn get(&mut self, key: String) -> Result<Option<String>> {
-        if let Some(&log_index) = self.key_index.get(&key) {
-            let cmd = self.read_from_log(log_index)?;
-            match cmd {
-                Cmd::Set(_, val) => Ok(Some(val)),
-                Cmd::Rm(_) => Ok(None),
-            }
-        } else {
-            while self.index_scanned != 0 {
-                self.import_next_log()?;
-                if let Some(&log_index) = self.key_index.get(&key) {
-                    let cmd = self.read_from_log(log_index)?;
-                    match cmd {
-                        Cmd::Set(_, val) => return Ok(Some(val)),
-                        Cmd::Rm(_) => return Ok(None),
-                    }
-                }
-            }
-            Ok(None)
-        }
-    }
-
-    fn remove(&mut self, key: String) -> Result<()> {
-        if self.key_index.contains_key(&key) {
-            self.append_log(Cmd::Rm(key.clone()), key)
-        } else {
-            while self.index_scanned != 0 {
-                self.import_next_log()?;
-                if let Some(&log_index) = self.key_index.get(&key) {
-                    let cmd = self.read_from_log(log_index)?;
-                    if let Cmd::Rm(_) = cmd {
-                        return Err(KvsError::KeyNotFound);
-                    } else {
-                        return self.append_log(Cmd::Rm(key.clone()), key);
-                    }
-                }
-            }
-            Err(KvsError::KeyNotFound)
-        }
     }
 }

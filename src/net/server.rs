@@ -21,17 +21,17 @@ impl<T: KvsEngine> KvsServer<T> {
     }
 
     /// Start the server to serve client queries
-    pub fn serve(&mut self) -> Result<()> {
+    pub fn serve(&self) -> Result<()> {
         for stream in self.listener.incoming() {
             if let Ok(mut stream) = stream {
                 info!("serving: {:?}", stream.peer_addr()?);
-                let _ = Self::handle(&mut stream, &mut self.engine);
+                let _ = Self::handle(&mut stream, &self.engine);
             }
         }
         Ok(())
     }
 
-    fn handle(stream: &mut TcpStream, engine: &mut T) -> Result<()> {
+    fn handle(stream: &mut TcpStream, engine: &T) -> Result<()> {
         let query = receive(stream)?;
         let response = match query {
             Query::Set(key, val) => match engine.set(key, val) {
