@@ -4,35 +4,45 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use log::info;
 
 use crate::net::{Query, Response};
+use crate::thread_pool::ThreadPool;
 use crate::{KvsEngine, Result};
 
 /// A TCP Server to handle queries from client
-pub struct KvsServer<T> {
+pub struct KvsServer<T, U> {
     listener: TcpListener,
     engine: T,
+    thread_pool: U,
 }
 
-impl<T: KvsEngine> KvsServer<T> {
+impl<T: KvsEngine, U: ThreadPool> KvsServer<T, U> {
     /// Initialize the key-value server
-    pub fn init(engine: T, addr: &SocketAddr) -> Result<Self> {
+    pub fn init(engine: T, addr: &SocketAddr, thread_pool: U) -> Result<Self> {
         let listener = TcpListener::bind(addr)?;
 
-        Ok(Self { listener, engine })
+        Ok(Self {
+            listener,
+            engine,
+            thread_pool,
+        })
     }
 
     /// Start the server to serve client queries
     pub fn serve(&self) -> Result<()> {
         for stream in self.listener.incoming() {
-            if let Ok(mut stream) = stream {
+            if let Ok(stream) = stream {
                 info!("serving: {:?}", stream.peer_addr()?);
-                let _ = Self::handle(&mut stream, &self.engine);
+                let engine_clone = self.engine.clone();
+
+                self.thread_pool.spawn(|| {
+                    Self::handle(stream, engine_clone).unwrap();
+                });
             }
         }
         Ok(())
     }
 
-    fn handle(stream: &mut TcpStream, engine: &T) -> Result<()> {
-        let query = receive(stream)?;
+    fn handle(mut stream: TcpStream, engine: T) -> Result<()> {
+        let query = receive(&mut stream)?;
         let response = match query {
             Query::Set(key, val) => match engine.set(key, val) {
                 Ok(_) => Response::Success,
@@ -47,7 +57,7 @@ impl<T: KvsEngine> KvsServer<T> {
                 Err(_) => Response::Err,
             },
         };
-        send(stream, response)?;
+        send(&mut stream, response)?;
         Ok(())
     }
 }
