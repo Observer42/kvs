@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use log::info;
 use structopt::StructOpt;
 
-use kvs::thread_pool::{NaiveThreadPool, ThreadPool};
+use kvs::thread_pool::{SharedQueueThreadPool, ThreadPool};
 use kvs::{EngineType, KvStore, KvsEngine, KvsServer, SledKvsEngine};
 
 #[derive(Debug, StructOpt)]
@@ -25,7 +25,7 @@ fn main() -> kvs::Result<()> {
 
     let dir = current_dir()?;
 
-    let thread_pool = NaiveThreadPool::new(0)?;
+    let thread_pool = SharedQueueThreadPool::new(num_cpus::get() as u32)?;
     match opt.engine {
         EngineType::KvStore => start_server(KvStore::open(dir)?, opt.addr, thread_pool),
         EngineType::Sled => start_server(SledKvsEngine::open(dir)?, opt.addr, thread_pool),

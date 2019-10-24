@@ -3,8 +3,10 @@
 //! This module contains ?? `ThreadPool` implementation
 
 mod naive;
+mod shared_queue;
 
 pub use naive::NaiveThreadPool;
+pub use shared_queue::SharedQueueThreadPool;
 
 use crate::Result;
 
