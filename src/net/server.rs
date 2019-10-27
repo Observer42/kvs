@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use log::info;
 
@@ -9,26 +10,33 @@ use crate::{KvsEngine, Result};
 
 /// A TCP Server to handle queries from client
 pub struct KvsServer<T, U> {
+    addr: SocketAddr,
     listener: TcpListener,
     engine: T,
     thread_pool: U,
+    stop: AtomicBool,
 }
 
 impl<T: KvsEngine, U: ThreadPool> KvsServer<T, U> {
     /// Initialize the key-value server
-    pub fn init(engine: T, addr: &SocketAddr, thread_pool: U) -> Result<Self> {
-        let listener = TcpListener::bind(addr)?;
+    pub fn init(engine: T, addr: SocketAddr, thread_pool: U) -> Result<Self> {
+        let listener = TcpListener::bind(&addr)?;
 
         Ok(Self {
+            addr,
             listener,
             engine,
             thread_pool,
+            stop: AtomicBool::new(false),
         })
     }
 
     /// Start the server to serve client queries
     pub fn serve(&self) -> Result<()> {
         for stream in self.listener.incoming() {
+            if self.stop.load(Ordering::Acquire) {
+                break;
+            }
             if let Ok(stream) = stream {
                 info!("serving: {:?}", stream.peer_addr()?);
                 let engine_clone = self.engine.clone();
@@ -59,6 +67,12 @@ impl<T: KvsEngine, U: ThreadPool> KvsServer<T, U> {
         };
         send(&mut stream, response)?;
         Ok(())
+    }
+
+    /// Stop the server
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = TcpStream::connect(&self.addr);
     }
 }
 

@@ -33,6 +33,6 @@ fn main() -> kvs::Result<()> {
 }
 
 fn start_server<T: KvsEngine, U: ThreadPool>(engine: T, addr: SocketAddr, thread_pool: U) -> kvs::Result<()> {
-    let server = KvsServer::init(engine, &addr, thread_pool)?;
+    let server = KvsServer::init(engine, addr, thread_pool)?;
     server.serve()
 }
