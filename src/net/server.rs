@@ -1,6 +1,9 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::thread::JoinHandle;
 
 use log::info;
 
@@ -9,71 +12,83 @@ use crate::thread_pool::ThreadPool;
 use crate::{KvsEngine, Result};
 
 /// A TCP Server to handle queries from client
-pub struct KvsServer<T, U> {
+#[derive(Clone)]
+pub struct KvsServer<E: KvsEngine, P: ThreadPool> {
     addr: SocketAddr,
-    listener: TcpListener,
-    engine: T,
-    thread_pool: U,
-    stop: AtomicBool,
+    engine: E,
+    thread_pool: Arc<Mutex<P>>,
+    stop: Arc<AtomicBool>,
 }
 
-impl<T: KvsEngine, U: ThreadPool> KvsServer<T, U> {
+impl<E: KvsEngine, P: ThreadPool> KvsServer<E, P> {
     /// Initialize the key-value server
-    pub fn init(engine: T, addr: SocketAddr, thread_pool: U) -> Result<Self> {
-        let listener = TcpListener::bind(&addr)?;
-
+    pub fn init(engine: E, addr: SocketAddr, thread_pool: P) -> Result<Self> {
         Ok(Self {
             addr,
-            listener,
             engine,
-            thread_pool,
-            stop: AtomicBool::new(false),
+            thread_pool: Arc::new(Mutex::new(thread_pool)),
+            stop: Arc::new(AtomicBool::new(false)),
         })
     }
 
     /// Start the server to serve client queries
-    pub fn serve(&self) -> Result<()> {
-        for stream in self.listener.incoming() {
-            if self.stop.load(Ordering::Acquire) {
-                break;
-            }
-            if let Ok(stream) = stream {
-                info!("serving: {:?}", stream.peer_addr()?);
-                let engine_clone = self.engine.clone();
+    pub fn start(&self) -> JoinHandle<Result<()>> {
+        let addr = self.addr;
+        let thread_pool = self.thread_pool.clone();
+        let engine = self.engine.clone();
+        let stop_sign = self.stop.clone();
 
-                self.thread_pool.spawn(|| {
-                    Self::handle(stream, engine_clone).unwrap();
-                });
-            }
-        }
-        Ok(())
-    }
+        thread::spawn(move || {
+            let pool_lock = thread_pool.lock().unwrap();
+            let listener = TcpListener::bind(addr)?;
+            for stream in listener.incoming() {
+                if stop_sign.load(Ordering::Acquire) {
+                    break;
+                }
+                if let Ok(stream) = stream {
+                    info!("serving: {:?}", stream.peer_addr()?);
+                    let engine = engine.clone();
 
-    fn handle(mut stream: TcpStream, engine: T) -> Result<()> {
-        let query = receive(&mut stream)?;
-        let response = match query {
-            Query::Set(key, val) => match engine.set(key, val) {
-                Ok(_) => Response::Success,
-                Err(_) => Response::Err,
-            },
-            Query::Get(key) => match engine.get(key) {
-                Ok(val) => Response::Ok(val),
-                Err(_) => Response::Err,
-            },
-            Query::Rm(key) => match engine.remove(key) {
-                Ok(_) => Response::Success,
-                Err(_) => Response::Err,
-            },
-        };
-        send(&mut stream, response)?;
-        Ok(())
+                    pool_lock.spawn(move || {
+                        handle(stream, engine).unwrap();
+                    });
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Stop the server
-    pub fn stop(&self) {
+    pub fn stop_server(&self) {
         self.stop.store(true, Ordering::Release);
-        let _ = TcpStream::connect(&self.addr);
+        let _stream = TcpStream::connect(&self.addr);
     }
+}
+
+impl<E: KvsEngine, P: ThreadPool> Drop for KvsServer<E, P> {
+    fn drop(&mut self) {
+        self.stop_server();
+    }
+}
+
+fn handle<E: KvsEngine>(mut stream: TcpStream, engine: E) -> Result<()> {
+    let query = receive(&mut stream)?;
+    let response = match query {
+        Query::Set(key, val) => match engine.set(key, val) {
+            Ok(_) => Response::Success,
+            Err(_) => Response::Err,
+        },
+        Query::Get(key) => match engine.get(key) {
+            Ok(val) => Response::Ok(val),
+            Err(_) => Response::Err,
+        },
+        Query::Rm(key) => match engine.remove(key) {
+            Ok(_) => Response::Success,
+            Err(_) => Response::Err,
+        },
+    };
+    send(&mut stream, response)?;
+    Ok(())
 }
 
 fn receive(stream: &mut TcpStream) -> Result<Query> {
