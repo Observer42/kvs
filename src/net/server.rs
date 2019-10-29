@@ -1,6 +1,9 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::thread::JoinHandle;
 
 use log::info;
 
@@ -9,47 +12,53 @@ use crate::thread_pool::ThreadPool;
 use crate::{KvsEngine, Result};
 
 /// A TCP Server to handle queries from client
-pub struct KvsServer<T, U> {
+#[derive(Clone)]
+pub struct KvsServer<E, P> {
     addr: SocketAddr,
-    listener: TcpListener,
-    engine: T,
-    thread_pool: U,
-    stop: AtomicBool,
+    engine: E,
+    thread_pool: Arc<Mutex<P>>,
+    stop: Arc<AtomicBool>,
 }
 
-impl<T: KvsEngine, U: ThreadPool> KvsServer<T, U> {
+impl<E: KvsEngine, P: ThreadPool> KvsServer<E, P> {
     /// Initialize the key-value server
-    pub fn init(engine: T, addr: SocketAddr, thread_pool: U) -> Result<Self> {
-        let listener = TcpListener::bind(&addr)?;
-
+    pub fn init(engine: E, addr: SocketAddr, thread_pool: P) -> Result<Self> {
         Ok(Self {
             addr,
-            listener,
             engine,
-            thread_pool,
-            stop: AtomicBool::new(false),
+            thread_pool: Arc::new(Mutex::new(thread_pool)),
+            stop: Arc::new(AtomicBool::new(false)),
         })
     }
 
     /// Start the server to serve client queries
-    pub fn serve(&self) -> Result<()> {
-        for stream in self.listener.incoming() {
-            if self.stop.load(Ordering::Acquire) {
-                break;
-            }
-            if let Ok(stream) = stream {
-                info!("serving: {:?}", stream.peer_addr()?);
-                let engine_clone = self.engine.clone();
+    pub fn start2(&self) -> Option<JoinHandle<Result<()>>> {
+        let engine = self.engine.clone();
 
-                self.thread_pool.spawn(|| {
-                    Self::handle(stream, engine_clone).unwrap();
-                });
+        let dup = self.clone();
+        let handler = thread::spawn(|| {
+            let pool = dup.thread_pool;
+            let pool_lock = pool.lock().unwrap();
+            let listener = TcpListener::bind(self.addr)?;
+            for stream in listener.incoming() {
+                if dup.stop.load(Ordering::Acquire) {
+                    break;
+                }
+                if let Ok(stream) = stream {
+                    info!("serving: {:?}", stream.peer_addr()?);
+                    let engine_clone = dup.engine.clone();
+
+                    pool_lock.spawn(move || {
+                        Self::handle(stream, engine_clone).unwrap();
+                    });
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        });
+        Some(handler)
     }
 
-    fn handle(mut stream: TcpStream, engine: T) -> Result<()> {
+    fn handle(mut stream: TcpStream, engine: E) -> Result<()> {
         let query = receive(&mut stream)?;
         let response = match query {
             Query::Set(key, val) => match engine.set(key, val) {
@@ -74,6 +83,10 @@ impl<T: KvsEngine, U: ThreadPool> KvsServer<T, U> {
         self.stop.store(true, Ordering::Release);
         let _ = TcpStream::connect(&self.addr);
     }
+}
+
+struct KvsServerStop {
+
 }
 
 fn receive(stream: &mut TcpStream) -> Result<Query> {

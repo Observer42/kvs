@@ -13,7 +13,7 @@ pub use shared_queue::SharedQueueThreadPool;
 use crate::Result;
 
 /// Interface for thread pool implementation
-pub trait ThreadPool {
+pub trait ThreadPool: Send + 'static {
     /// Creates a thread pool
     ///
     /// return error if failed to create any thread
