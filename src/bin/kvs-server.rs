@@ -1,10 +1,11 @@
+use std::env::current_dir;
 use std::net::SocketAddr;
 
 use log::info;
 use structopt::StructOpt;
 
+use kvs::thread_pool::{SharedQueueThreadPool, ThreadPool};
 use kvs::{EngineType, KvStore, KvsEngine, KvsServer, SledKvsEngine};
-use std::env::current_dir;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "kvs-server", about = env!("CARGO_PKG_DESCRIPTION"))]
@@ -24,13 +25,15 @@ fn main() -> kvs::Result<()> {
 
     let dir = current_dir()?;
 
+    let thread_pool = SharedQueueThreadPool::new(num_cpus::get() as u32)?;
     match opt.engine {
-        EngineType::KvStore => start_server(KvStore::open(dir)?, opt.addr),
-        EngineType::Sled => start_server(SledKvsEngine::open(dir)?, opt.addr),
+        EngineType::KvStore => start_server(KvStore::open(dir)?, opt.addr, thread_pool),
+        EngineType::Sled => start_server(SledKvsEngine::open(dir)?, opt.addr, thread_pool),
     }
 }
 
-fn start_server<T: KvsEngine>(engine: T, addr: SocketAddr) -> kvs::Result<()> {
-    let mut server = KvsServer::init(engine, &addr)?;
-    server.serve()
+fn start_server<E: KvsEngine, P: ThreadPool>(engine: E, addr: SocketAddr, thread_pool: P) -> kvs::Result<()> {
+    let server = KvsServer::init(engine, addr, thread_pool)?;
+    let handle = server.start();
+    handle.join().unwrap()
 }

@@ -22,7 +22,7 @@ fn bench_write(c: &mut Criterion) {
     c.bench_function("sled write", move |b| {
         b.iter(|| {
             let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-            let mut store = SledKvsEngine::open(temp_dir.path()).unwrap();
+            let store = SledKvsEngine::open(temp_dir.path()).unwrap();
             map_clone.iter().for_each(|(k, v)| {
                 store.set(k.clone(), v.clone()).unwrap();
             });
@@ -31,7 +31,7 @@ fn bench_write(c: &mut Criterion) {
     c.bench_function("kvs write", move |b| {
         b.iter(|| {
             let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-            let mut store = KvStore::open(temp_dir.path()).unwrap();
+            let store = KvStore::open(temp_dir.path()).unwrap();
             map.iter().for_each(|(k, v)| {
                 store.set(k.clone(), v.clone()).unwrap();
             });
@@ -53,7 +53,7 @@ fn bench_read(c: &mut Criterion) {
     let map_clone = map.clone();
     c.bench_function("sled read", move |b| {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-        let mut store = SledKvsEngine::open(temp_dir.path()).unwrap();
+        let store = SledKvsEngine::open(temp_dir.path()).unwrap();
         map_clone.iter().for_each(|(k, v)| {
             store.set(k.clone(), v.clone()).unwrap();
         });
@@ -68,7 +68,7 @@ fn bench_read(c: &mut Criterion) {
 
     c.bench_function("kvs read", move |b| {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-        let mut store = KvStore::open(temp_dir.path()).unwrap();
+        let store = KvStore::open(temp_dir.path()).unwrap();
         map.iter().for_each(|(k, v)| {
             store.set(k.clone(), v.clone()).unwrap();
         });

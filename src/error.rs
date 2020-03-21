@@ -24,6 +24,9 @@ pub enum KvsError {
     /// Wrong engine
     #[fail(display = "wrong engine")]
     WrongEngine,
+    /// Thread Pool creation error
+    #[fail(display = "failed to create thread pool")]
+    ThreadPoolError,
 }
 
 impl From<io::Error> for KvsError {

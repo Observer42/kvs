@@ -16,17 +16,17 @@ const ENGINE_TYPE_SLED: &str = "sled";
 const ENGINE_TYPE_KVSTORE: &str = "kvs";
 
 /// Trait for key-value store
-pub trait KvsEngine {
+pub trait KvsEngine: Clone + Send + 'static {
     /// get the value from the store for a given key.
     ///
     /// return `Ok(None)` if the key does not exist.
-    fn get(&mut self, key: String) -> Result<Option<String>>;
+    fn get(&self, key: String) -> Result<Option<String>>;
     /// set a key-value pair into the store.
     ///
     /// if the key already exists, the value will be updated.
-    fn set(&mut self, key: String, value: String) -> Result<()>;
+    fn set(&self, key: String, value: String) -> Result<()>;
     /// remove the key from the store.
-    fn remove(&mut self, key: String) -> Result<()>;
+    fn remove(&self, key: String) -> Result<()>;
 }
 
 /// Engine Type: sled or kv_store
