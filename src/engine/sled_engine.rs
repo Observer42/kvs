@@ -20,7 +20,7 @@ impl SledKvsEngine {
 
         try_add_engine_type(&log_dir, EngineType::Sled)?;
 
-        let db = Db::open(log_dir)?;
+        let db = sled::open(log_dir)?;
         Ok(Self { db })
     }
 }
