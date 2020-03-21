@@ -103,7 +103,7 @@ impl KvStore {
 
         let latest = Arc::new(AtomicUsize::from(epoch));
 
-        let key_index = Self::import_log(&mut reader, epoch)?;
+        let (key_index, redundant) = Self::import_log(&mut reader, epoch)?;
         let path = Arc::new(log_dir);
 
         let mut buf_readers = [None, None];
@@ -121,11 +121,10 @@ impl KvStore {
             path: path.clone(),
             epoch: latest.clone(),
             key_index,
-            redundant: 0,
+            redundant,
             reader: reader.clone(),
-            writer: writer,
+            writer,
         };
-        //import_log()?;
 
         Ok(Self {
             reader,
@@ -133,22 +132,35 @@ impl KvStore {
         })
     }
 
-    fn import_log(reader: &mut BufReader<File>, epoch: usize) -> Result<Arc<CHashMap<String, LogIndex>>> {
+    fn import_log(reader: &mut BufReader<File>, epoch: usize) -> Result<(Arc<CHashMap<String, LogIndex>>, u32)> {
         reader.seek(SeekFrom::Start(0))?;
         let mut cur_pos = 0;
         let mut stream = serde_json::Deserializer::from_reader(reader).into_iter::<Cmd>();
         let key_index = CHashMap::new();
+        let mut redundant = 0;
 
         while let Some(cmd) = stream.next() {
-            let key = match cmd? {
+            let cmd = cmd?;
+            let key = match &cmd {
                 Cmd::Set(key, _) => key.clone(),
                 Cmd::Rm(key) => key.clone(),
             };
             let new_pos = stream.byte_offset() as u64;
-            key_index.insert(key, LogIndex::new(epoch, cur_pos, new_pos - cur_pos));
+            match cmd {
+                Cmd::Rm(_) => {
+                    key_index.remove(&key);
+                    redundant += 2;
+                }
+                Cmd::Set(_, _) => {
+                    if let Some(_) = key_index.insert(key, LogIndex::new(epoch, cur_pos, new_pos - cur_pos)) {
+                        redundant += 1;
+                    }
+                }
+            };
+
             cur_pos = new_pos;
         }
-        Ok(Arc::new(key_index))
+        Ok((Arc::new(key_index), redundant))
     }
 }
 
@@ -206,7 +218,9 @@ impl KvStoreReader {
 
     fn read_from_log(&self, log_index: LogIndex) -> Result<Cmd> {
         let mut readers = self.readers.borrow_mut();
-        let reader = readers[log_index.epoch % 2].as_mut().unwrap();
+        let reader = readers[log_index.epoch % 2].get_or_insert_with(|| {
+            BufReader::new(File::open(self.path.join(format!("{}.log", log_index.epoch))).unwrap())
+        });
         reader.seek(SeekFrom::Start(log_index.offset))?;
         let take = reader.take(log_index.len);
         serde_json::from_reader(take).map_err(|e| e.into())
@@ -256,7 +270,7 @@ impl KvStoreWriter {
         self.writer.flush()?;
         let new_offset = self.writer.seek(SeekFrom::End(0))?;
 
-        let epoch = self.epoch.load(Ordering::Acquire);
+        let epoch = self.epoch.load(Ordering::SeqCst);
         let log_index = LogIndex::new(epoch, offset, new_offset - offset);
 
         //trigger compaction if necessary: too much redundant records or active_file too large
@@ -286,8 +300,10 @@ impl KvStoreWriter {
         new_writer.flush()?;
         drop(new_writer);
 
-        let old_path = self.path.join(format!("{}.log", new_epoch - 2));
-        let _ = std::fs::remove_file(old_path);
+        if new_epoch >= 2 {
+            let potential_old_file = self.path.join(format!("{}.log", new_epoch - 2));
+            let _ = std::fs::remove_file(potential_old_file);
+        }
 
         let new_path = self.path.join(format!("{}.log", new_epoch));
         std::fs::rename(temp_path, &new_path)?;
@@ -298,7 +314,7 @@ impl KvStoreWriter {
         }
         self.redundant = 0;
 
-        self.writer = BufWriter::new(File::create(&new_path)?);
+        self.writer = BufWriter::new(OpenOptions::new().append(true).open(&new_path)?);
 
         Ok(())
     }
