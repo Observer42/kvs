@@ -5,6 +5,7 @@ use log::error;
 use structopt::StructOpt;
 
 use kvs::KvsClient;
+use kvs::Result;
 
 #[derive(Debug, StructOpt)]
 enum Command {
@@ -46,23 +47,24 @@ struct Opt {
     command: Command,
 }
 
-fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
     let opt: Opt = Opt::from_args();
-    let mut client = KvsClient::init(opt.command.get_addr()).unwrap();
+    let mut client = KvsClient::init(opt.command.get_addr()).await?;
     match opt.command {
-        Command::Set { key, val, .. } => match client.set(key, val) {
+        Command::Set { key, val, .. } => match client.set(key, val).await {
             Ok(_) => (),
             Err(err) => {
                 error!("{}", err);
                 exit(1);
             }
         },
-        Command::Get { key, .. } => match client.get(key) {
+        Command::Get { key, .. } => match client.get(key).await {
             Ok(Some(val)) => println!("{}", val),
             Ok(None) => println!("Key not found"),
             _ => exit(1),
         },
-        Command::Remove { key, .. } => match client.remove(key) {
+        Command::Remove { key, .. } => match client.remove(key).await {
             Ok(_) => (),
             _ => {
                 eprintln!("Key not found");
@@ -70,4 +72,6 @@ fn main() {
             }
         },
     };
+
+    Ok(())
 }

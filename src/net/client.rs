@@ -1,5 +1,7 @@
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 use crate::net::{Query, Response};
 use crate::{KvsError, Result};
@@ -11,17 +13,17 @@ pub struct KvsClient {
 
 impl KvsClient {
     /// initiate a connection to remote socket
-    pub fn init(addr: &SocketAddr) -> Result<Self> {
-        let stream = TcpStream::connect(addr)?;
+    pub async fn init(addr: &SocketAddr) -> Result<Self> {
+        let stream = TcpStream::connect(addr).await?;
         Ok(Self { stream })
     }
 
     /// query value from server for the given key
-    pub fn get(&mut self, key: String) -> Result<Option<String>> {
+    pub async fn get(&mut self, key: String) -> Result<Option<String>> {
         let query = Query::Get(key);
-        self.send(query)?;
+        self.send(query).await?;
 
-        match self.receive()? {
+        match self.receive().await? {
             Response::Ok(val) => Ok(val),
             Response::KeyNotFound => Err(KvsError::KeyNotFound),
             Response::Err => Err(KvsError::ServerError),
@@ -30,10 +32,10 @@ impl KvsClient {
     }
 
     /// set key value pair to server
-    pub fn set(&mut self, key: String, val: String) -> Result<()> {
+    pub async fn set(&mut self, key: String, val: String) -> Result<()> {
         let query = Query::Set(key, val);
-        self.send(query)?;
-        match self.receive()? {
+        self.send(query).await?;
+        match self.receive().await? {
             Response::Success => Ok(()),
             Response::Err => Err(KvsError::ServerError),
             _ => unreachable!(),
@@ -41,10 +43,10 @@ impl KvsClient {
     }
 
     /// remove key-value pair from server for the given key
-    pub fn remove(&mut self, key: String) -> Result<()> {
+    pub async fn remove(&mut self, key: String) -> Result<()> {
         let query = Query::Rm(key);
-        self.send(query)?;
-        match self.receive()? {
+        self.send(query).await?;
+        match self.receive().await? {
             Response::Success => Ok(()),
             Response::KeyNotFound => Err(KvsError::KeyNotFound),
             Response::Err => Err(KvsError::ServerError),
@@ -52,19 +54,21 @@ impl KvsClient {
         }
     }
 
-    fn send(&mut self, query: Query) -> Result<()> {
+    async fn send(&mut self, query: Query) -> Result<()> {
         let serialized_query = serde_json::to_vec(&query)?;
-        self.stream.write_all(&(serialized_query.len() as u32).to_be_bytes())?;
-        self.stream.write_all(&serialized_query)?;
+        self.stream
+            .write_all(&(serialized_query.len() as u32).to_be_bytes())
+            .await?;
+        self.stream.write_all(&serialized_query).await?;
         Ok(())
     }
 
-    fn receive(&mut self) -> Result<Response> {
+    async fn receive(&mut self) -> Result<Response> {
         let mut msg_len = [0; 4];
-        self.stream.read_exact(&mut msg_len)?;
+        self.stream.read_exact(&mut msg_len).await?;
         let len = u32::from_be_bytes(msg_len) as usize;
         let mut msg = vec![0; len];
-        self.stream.read_exact(&mut msg)?;
+        self.stream.read_exact(&mut msg).await?;
         serde_json::from_slice::<Response>(&msg).map_err(|e| e.into())
     }
 }

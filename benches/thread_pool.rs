@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use tempfile::TempDir;
+use tokio::runtime::Builder;
 
 use kvs::thread_pool::{RayonThreadPool, SharedQueueThreadPool, ThreadPool};
 use kvs::{KvStore, KvsClient, KvsEngine, KvsServer, SledKvsEngine};
@@ -79,11 +80,14 @@ fn read_general_bench<E: KvsEngine, T: ThreadPool, F: Fn() -> E>(
             b.iter(|| {
                 for num in 1000..2000 {
                     client_thread_pool.spawn(move || {
-                        let mut client = KvsClient::init(&addr).unwrap();
-                        let key = num.to_string();
-                        let res = client.get(key);
-                        assert!(res.is_ok());
-                        assert_eq!(res.unwrap(), Some("value".to_string()));
+                        let runtime = Builder::new_current_thread().build().unwrap();
+                        runtime.block_on(async move {
+                            let mut client = KvsClient::init(&addr).await.unwrap();
+                            let key = num.to_string();
+                            let res = client.get(key).await;
+                            assert!(res.is_ok());
+                            assert_eq!(res.unwrap(), Some("value".to_string()));
+                        });
                     });
                 }
             });
@@ -113,9 +117,12 @@ fn write_general_bench<E: KvsEngine, T: ThreadPool, F: Fn() -> E>(
             b.iter(|| {
                 for num in 1000..2000 {
                     client_thread_pool.spawn(move || {
-                        let mut client = KvsClient::init(&addr).unwrap();
-                        let key = num.to_string();
-                        assert!(client.set(key, "value".to_string()).is_ok());
+                        let runtime = Builder::new_current_thread().build().unwrap();
+                        runtime.block_on(async move {
+                            let mut client = KvsClient::init(&addr).await.unwrap();
+                            let key = num.to_string();
+                            assert!(client.set(key, "value".to_string()).await.is_ok());
+                        });
                     });
                 }
             });
