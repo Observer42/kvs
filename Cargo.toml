@@ -23,7 +23,7 @@ chashmap = "2"
 [dev-dependencies]
 assert_cmd = "0.12"
 criterion = "0.3.0"
-crossbeam-utils = "0.6"
+crossbeam-utils = "0.8"
 predicates = "1"
 rand = "0.6"
 tempfile = "3.0.7"
